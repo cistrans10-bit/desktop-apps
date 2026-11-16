@@ -138,6 +138,7 @@ CAscTabWidget::CAscTabWidget(QWidget *parent, CTabBar *_pBar)
 
     static int _dropedindex = -1;
     QObject::connect(this, &CAscTabWidget::currentChanged, this, [=](int index) {
+        placeSplitter(index);
         setFocusedView();
         _dropedindex = -1;
     });
@@ -150,6 +151,9 @@ CAscTabWidget::CAscTabWidget(QWidget *parent, CTabBar *_pBar)
         const CTabPanel * _panel = panel(index);
 
         if ( _panel && _panel->data()->viewType() == cvwtEditor ) {
+            if (isSplitIndex(index))
+                unsplit();
+
             CTabUndockEvent event(index);
             QObject * obj = qobject_cast<QObject*>(&AscAppManager::getInstance());
             if ( QApplication::sendEvent(obj, &event) && event.isAccepted() ) {
@@ -223,6 +227,13 @@ CAscTabWidget::CAscTabWidget(QWidget *parent, CTabBar *_pBar)
 CTabPanel * CAscTabWidget::panel(int index) const
 {
     QWidget * _w = widget(index);
+    if (_w && m_split.splitter) {
+        // while split, a panel may be hosted by the other tab's widget
+        if (_w == m_split.primaryHome)
+            return m_split.primary;
+        if (_w == m_split.secondaryHome)
+            return m_split.secondary;
+    }
     return _w && _w->children().count() ? static_cast<CTabPanel *>(_w->findChild<CTabPanel*>()) : nullptr;
 }
 
@@ -300,6 +311,9 @@ void CAscTabWidget::closeEditor(int i, bool m, bool r)
         CAscTabData * doc = view->data();
 
         if (doc && (!m || (!doc->hasChanges() && !view->hasUncommittedChanges()))) {
+            if (isSplitIndex(i))
+                unsplit();
+
             doc->close();
             if (i == currentIndex()) {
                 int last = count() - 1;
@@ -1212,6 +1226,8 @@ void CAscTabWidget::setFullScreen(bool apply, int id)
 //            updateGeometry();
         }
     } else {
+        unsplit();
+
         int tabIndex = tabIndexByView(id);
         if ( tabIndex < 0 )
             tabIndex = currentIndex();
@@ -1255,6 +1271,97 @@ void CAscTabWidget::setFullScreen(bool apply, int id)
 QWidget * CAscTabWidget::fullScreenWidget()
 {
     return m_dataFullScreen ? m_dataFullScreen->widget() : nullptr;
+}
+
+/*
+ *      Side-by-side view
+*/
+
+bool CAscTabWidget::splitWith(int index)
+{
+    const int cur = currentIndex();
+    if (!indexIsValid(index) || !indexIsValid(cur) || index == cur || m_dataFullScreen)
+        return false;
+
+    CTabPanel * left = panel(cur);
+    CTabPanel * right = panel(index);
+    if (!left || !right || !left->data()->isViewType(cvwtEditor) || !right->data()->isViewType(cvwtEditor))
+        return false;
+
+    unsplit();
+
+    QWidget * host = widget(cur);
+    QSplitter * splitter = new QSplitter(Qt::Horizontal, host);
+    splitter->setObjectName("asc_editors_splitter");
+    splitter->setChildrenCollapsible(false);
+    splitter->setHandleWidth(qMax(4, int(4 * scaling())));
+    splitter->addWidget(left);
+    splitter->addWidget(right);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 1);
+    splitter->setSizes({1, 1});
+
+    m_split.primary = left;
+    m_split.secondary = right;
+    m_split.primaryHome = host;
+    m_split.secondaryHome = widget(index);
+    m_split.splitter = splitter;
+
+    host->layout()->addWidget(splitter);
+    left->show();
+    right->show();
+
+    setFocusedView();
+    return true;
+}
+
+void CAscTabWidget::unsplit()
+{
+    if (!m_split.splitter) {
+        m_split = CSplitData();
+        return;
+    }
+
+    auto _restore = [](CTabPanel * p, QWidget * home) {
+        if (p && home && home->layout()) {
+            home->layout()->addWidget(p);
+            p->show();
+        }
+    };
+
+    CSplitData split = m_split;
+    m_split = CSplitData();
+
+    _restore(split.primary, split.primaryHome);
+    _restore(split.secondary, split.secondaryHome);
+    split.splitter->hide();
+    split.splitter->deleteLater();
+
+    setFocusedView();
+}
+
+bool CAscTabWidget::isSplit() const
+{
+    return !m_split.splitter.isNull();
+}
+
+bool CAscTabWidget::isSplitIndex(int index) const
+{
+    if (!m_split.splitter || index < 0 || !(index < count()))
+        return false;
+
+    QWidget * w = widget(index);
+    return w == m_split.primaryHome || w == m_split.secondaryHome;
+}
+
+void CAscTabWidget::placeSplitter(int index)
+{
+    // keep the side-by-side pair visible when either of its tabs is selected
+    if (isSplitIndex(index)) {
+        QWidget * host = widget(index);
+        if (m_split.splitter->parentWidget() != host && host->layout())
+            host->layout()->addWidget(m_split.splitter);
+    }
 }
 
 void CAscTabWidget::setStyleSheet(const QString& stylesheet)

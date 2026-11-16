@@ -97,6 +97,7 @@ public:
     void setMouseTracking(bool);
 #endif
     void doOpenLocalFile(COpenOptions&);
+    void convertPdfToDocx(int viewId);
     void handleWindowAction(const std::wstring& action);
     virtual void setScreenScalingFactor(double, bool resize = true) final;
     virtual void updateScalingFactor(double) final;

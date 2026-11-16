@@ -37,6 +37,8 @@
 #include "ctabundockevent.h"
 #include <qtcomp/qdesktopwidget.h>
 #include <QGridLayout>
+#include <QProcess>
+#include <QDir>
 #include <QTimer>
 #include <QApplication>
 #include <QGuiApplication>
@@ -607,6 +609,9 @@ void CMainWindow::onEditorAllowedClose(int uid)
     } else {
         int _index = m_pTabs->tabIndexByView(uid);
         if ( !(_index < 0) ) {
+            if ( m_pTabs->isSplitIndex(_index) )
+                m_pTabs->unsplit();
+
             QWidget * _view = m_pTabs->widget(_index);
             m_pTabs->removeWidget(_view);
             _view->deleteLater();
@@ -806,9 +811,29 @@ void CMainWindow::setTabMenu(int index, const QPoint &pos)
         }, Qt::QueuedConnection);
 
     if (panel && panel->data()->isViewType(cvwtEditor)) {
+        menu->addSeparator();
+        if (m_pTabs->isSplitIndex(index)) {
+            QAction *actUnsplit = menu->addSection(tr("Close side-by-side view"));
+            connect(actUnsplit, &QAction::triggered, this, [=]() {
+                    m_pTabs->unsplit();
+                }, Qt::QueuedConnection);
+        } else {
+            const int current = m_pTabs->currentIndex();
+            CTabPanel *currentPanel = m_pTabs->panel(current);
+            QAction *actSplit = menu->addSection(tr("Open side by side with current tab"));
+            actSplit->setEnabled(index != current && currentPanel && currentPanel->data()->isViewType(cvwtEditor));
+            connect(actSplit, &QAction::triggered, this, [=]() {
+                    m_pTabs->splitWith(index);
+                }, Qt::QueuedConnection);
+        }
+        menu->addSeparator();
+
         QAction *actUnpinTab = menu->addSection(CMenu::ActionUnpinTab);
         // actUnpinTab->setIcon(IconFactory::icon(IconFactory::Unpin, SMALL_ICON * m_dpiRatio));
         connect(actUnpinTab, &QAction::triggered, this, [=]() {
+                    if (m_pTabs->isSplitIndex(index))
+                        m_pTabs->unsplit();
+
                     CTabUndockEvent event(index);
                     QObject *obj = qobject_cast<QObject*>(&AscAppManager::getInstance());
                     if (QApplication::sendEvent(obj, &event) && event.isAccepted()) {
@@ -966,6 +991,81 @@ void CMainWindow::doOpenLocalFile(COpenOptions& opts)
         });
     }
     bringToTop();
+}
+
+void CMainWindow::convertPdfToDocx(int viewId)
+{
+    // Runs the bundled pdf2docx converter on the saved PDF of the given tab,
+    // then opens the resulting document side by side with the PDF.
+    int index = m_pTabs->tabIndexByView(viewId);
+    CTabPanel *panel = index < 0 ? nullptr : m_pTabs->panel(index);
+    if (!panel) {
+        CMessage::info(this, tr("Move the PDF back into the main window to convert it."));
+        return;
+    }
+
+    const QString pdfPath = QString::fromStdWString(panel->data()->url());
+    if (!panel->data()->isLocal() || !QFileInfo(pdfPath).isFile()) {
+        CMessage::info(this, tr("Save the PDF on this computer first, then try again."));
+        return;
+    }
+
+    if (m_pTabs->modifiedByIndex(index) &&
+            CMessage::showMessage(this, tr("The PDF has unsaved changes, which won't be included.<br>Convert the last saved version?"),
+                                  MsgType::MSG_WARN, MsgBtns::mbYesDefNo) != MODAL_RESULT_YES)
+    {
+        return;
+    }
+
+#ifdef _WIN32
+    const QString converter = QCoreApplication::applicationDirPath() + "/converter/pdf2docx.exe";
+#else
+    const QString converter = QCoreApplication::applicationDirPath() + "/converter/pdf2docx";
+#endif
+    if (!QFileInfo::exists(converter)) {
+        CMessage::error(this, tr("The PDF to Word converter is missing:<br>%1").arg(QDir::toNativeSeparators(converter).toHtmlEscaped()));
+        return;
+    }
+
+    const QFileInfo pdfInfo(pdfPath);
+    const QString base = pdfInfo.absolutePath() + "/" + pdfInfo.completeBaseName();
+    QString docxPath = base + ".docx";
+    for (int n = 2; QFileInfo::exists(docxPath); ++n)
+        docxPath = base + QString(" (%1).docx").arg(n);
+
+    QProcess *proc = new QProcess(this);
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+
+    connect(proc, &QProcess::errorOccurred, this, [=](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart)
+            return;     // other errors are followed by finished()
+        QApplication::restoreOverrideCursor();
+        proc->deleteLater();
+        CMessage::error(this, tr("Could not start the PDF to Word converter."));
+    });
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, [=](int code, QProcess::ExitStatus status) {
+        QApplication::restoreOverrideCursor();
+        const QString details = QString::fromLocal8Bit(proc->readAllStandardError()).trimmed();
+        proc->deleteLater();
+
+        if (status != QProcess::NormalExit || code != 0 || !QFileInfo::exists(docxPath)) {
+            CMessage::error(this, tr("Could not convert the PDF to Word.") +
+                                  (details.isEmpty() ? QString() : "<br>" + details.toHtmlEscaped()));
+            return;
+        }
+
+        COpenOptions opts{docxPath.toStdWString(), etLocalFile};
+        doOpenLocalFile(opts);
+
+        int docIndex = m_pTabs->tabIndexByUrl(docxPath);
+        int pdfIndex = m_pTabs->tabIndexByView(viewId);
+        if (!(docIndex < 0) && !(pdfIndex < 0) && docIndex != pdfIndex) {
+            m_pTabs->setCurrentIndex(pdfIndex);
+            m_pTabs->splitWith(docIndex);
+        }
+    });
+
+    proc->start(converter, {pdfPath, docxPath});
 }
 
 void CMainWindow::onLocalFileRecent(void * d)

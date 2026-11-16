@@ -27,6 +27,8 @@
 #define ASCTABWIDGET
 
 #include <QStackedWidget>
+#include <QSplitter>
+#include <QPointer>
 #include "ctabbar.h"
 #include "cscalingwrapper.h"
 #include "ctabpanel.h"
@@ -115,7 +117,16 @@ class CAscTabWidget : public QStackedWidget, public CScalingWrapper
 
     typedef std::map< AscEditorType, std::pair<const char*, const char*> > CTabIconSet;
 
+    // Two editor panels shown side by side. Each panel keeps its own tab;
+    // the splitter lives in whichever of the two tabs is current.
+    struct CSplitData {
+        QPointer<CTabPanel> primary, secondary;
+        QPointer<QWidget> primaryHome, secondaryHome;
+        QPointer<QSplitter> splitter;
+    };
+
 private:
+    CSplitData m_split;
     std::map<int, QCefView*> m_mapDownloads;
     CFullScreenData * m_dataFullScreen;
     size_params m_widthParams,
@@ -156,6 +167,7 @@ public:
 protected:
     int insertWidget(int index, QWidget* widget);
     void closeEditor(int, bool, bool);
+    void placeSplitter(int index);
 
 public:
     int         tabIndexByView(int);
@@ -196,6 +208,11 @@ public:
     void setFocusedView(int index = -1);
     void setFullScreen(bool, int id = -1);
     QWidget * fullScreenWidget();
+
+    bool splitWith(int index);
+    void unsplit();
+    bool isSplit() const;
+    bool isSplitIndex(int index) const;
 
     int  openCloudDocument(COpenOptions&, bool, bool forcenew = false);
     int  openLocalDocument(const COpenOptions&, bool, bool forcenew = false);

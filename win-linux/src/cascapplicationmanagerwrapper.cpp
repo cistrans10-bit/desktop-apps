@@ -380,6 +380,11 @@ bool CAscApplicationManagerWrapper::processCommonEvent(NSEditorApi::CAscCefMenuE
             }
         } else
 #endif
+        if ( cmd.compare(L"pdf:todocx") == 0 ) {
+            if ( mainWindow() )
+                mainWindow()->convertPdfToDocx(event->get_SenderId());
+            return true;
+        } else
         if ( cmd.compare(L"title:button") == 0 ) {
             map<int, CCefEventsGate *>::const_iterator it = m_receivers.find(event->get_SenderId());
             if ( it != m_receivers.cend() ) {
